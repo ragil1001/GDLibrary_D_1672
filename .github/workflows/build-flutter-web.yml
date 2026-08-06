@@ -28,9 +28,68 @@ jobs:
       - name: Build original Flutter Web project
         run: flutter build web --release
 
+      - name: Set up Node.js for browser capture
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install browser controller
+        run: npm install --no-save puppeteer-core@24.16.0
+
+      - name: Run original Flutter Web build and capture screenshots
+        shell: bash
+        run: |
+          python3 -m http.server 4173 --directory build/web >/tmp/gdlibrary-server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID || true' EXIT
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:4173/ >/dev/null; then break; fi
+            sleep 1
+          done
+          cat > /tmp/capture.mjs <<'NODE'
+          import puppeteer from 'puppeteer-core';
+          import { execSync } from 'node:child_process';
+
+          const executablePath = execSync('command -v google-chrome-stable || command -v google-chrome || command -v chromium-browser || command -v chromium', { encoding: 'utf8' }).trim();
+          const browser = await puppeteer.launch({
+            executablePath,
+            headless: true,
+            args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-swiftshader', '--use-gl=swiftshader']
+          });
+
+          async function capture(name, width, height) {
+            const page = await browser.newPage();
+            const errors = [];
+            page.on('console', message => {
+              if (message.type() === 'error') errors.push(`console: ${message.text()}`);
+            });
+            page.on('pageerror', error => errors.push(`pageerror: ${error.message}`));
+            await page.setViewport({ width, height, deviceScaleFactor: 1 });
+            await page.goto('http://127.0.0.1:4173/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await new Promise(resolve => setTimeout(resolve, 15000));
+            await page.screenshot({ path: `screenshots/${name}.png`, fullPage: true });
+            console.log(`${name} title:`, await page.title());
+            console.log(`${name} errors:`, JSON.stringify(errors));
+            await page.close();
+          }
+
+          await import('node:fs').then(fs => fs.mkdirSync('screenshots', { recursive: true }));
+          await capture('gdlibrary-desktop', 1440, 1800);
+          await capture('gdlibrary-mobile', 430, 1400);
+          await browser.close();
+          NODE
+          node /tmp/capture.mjs
+
       - name: Upload original Flutter Web build
         uses: actions/upload-artifact@v4
         with:
           name: GDLibrary_D_1672-flutter-web
           path: build/web
+          if-no-files-found: error
+
+      - name: Upload rendered screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: GDLibrary_D_1672-screenshots
+          path: screenshots
           if-no-files-found: error
